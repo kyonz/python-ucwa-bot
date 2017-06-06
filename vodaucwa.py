@@ -55,7 +55,7 @@ class LyncBot:
         self.user_url = None
         self.application_url = None
         self.self_application_url = None
-        self.authorization = None
+        self.authorization = {}
         self.root_url = None
         self.messaging_url = None
         self.events_url = None
@@ -71,6 +71,43 @@ class LyncBot:
         self.discover_url = None
         self.outgoing_message = None
         thread.start_new_thread(self.heartbeat, ())
+
+    def get_authorization(self, url):
+        print 'getting authorization for ' + url
+        m = re.search('^(https://.*?)/', url)
+        root_url = m.group(1)
+        print '...' + root_url
+
+        if root_url in self.authorization:
+            print 'found authorization: ' + self.authorization[root_url]
+            return self.authorization[root_url]
+        else:
+            print 'passing to authorize url'
+            self.authorize(url)
+
+    def authorize(self, url):
+        print 'authorizing url ' + url
+        m = re.search('^(https://.*?)/', url)
+        root_url = m.group(1)
+
+        data = urllib.urlencode({
+            'grant_type': 'password',
+            'username': self.username,
+            'password': self.password
+        })
+
+        oauth_url = root_url + '/Webticket/oauthtoken'
+
+        try:
+            req = urllib2.Request(url=oauth_url, data=data)
+            req.add_header("Content-Type", 'application/x-www-form-urlencoded;charset=UTF-8')
+            j = json.loads(urllib2.urlopen(req).read())
+            token = j['access_token']
+            type = j['token_type']
+            self.authorization[root_url] = "%s %s" % (type, token)
+        except urllib2.HTTPError, e:
+            print e.read()
+            raise
 
     def authenticate(self, discover_url, username, password):
         try:
@@ -102,16 +139,7 @@ class LyncBot:
             'password': self.password
         })
 
-        try:
-            req = urllib2.Request(url=oauth_url, data=data)
-            req.add_header("Content-Type", 'application/x-www-form-urlencoded;charset=UTF-8')
-            j = json.loads(urllib2.urlopen(req).read())
-            token = j['access_token']
-            type = j['token_type']
-            self.authorization = "%s %s" % (type, token)
-        except urllib2.HTTPError, e:
-            print e.read()
-            raise
+        self.authorize(oauth_url)
 
     def setupApplication(self):
         self.application_url = self.http(self.user_url, None)['_links']['applications']['href']
@@ -150,7 +178,7 @@ class LyncBot:
                                         if self.outgoing_message:
                                             messaging_url = self.root_url+event['_embedded'][action]['_links']['messaging']['href']
                                             message_req = urllib2.Request(url=messaging_url+'/messages', data=self.outgoing_message)
-                                            message_req.add_header("Authorization", self.authorization)
+                                            message_req.add_header("Authorization", self.get_authorization(messaging_url))
                                             message_req.add_header('Content-Type', 'text/plain')
                                             urllib2.urlopen(message_req).read()
                                             self.outgoing_message = None
@@ -168,7 +196,7 @@ class LyncBot:
                                 message_url = self.root_url+event['_embedded']['message']['_links']['self']['href']
                                 message = urllib.unquote(re.sub('\+', ' ', re.sub('^.*?,', '', raw))).rstrip()
                                 try:
-                                    thread.start_new_thread(self.messageCallback, (Message(message_url, uri, message, self.authorization),))
+                                    thread.start_new_thread(self.messageCallback, (Message(message_url, uri, message, self.get_authorization(message_url)),))
                                 except Exception, e:
                                     print e
 
@@ -225,13 +253,13 @@ class LyncBot:
         for x in range(0, 5):
             try:
                 req = urllib2.Request(url=url, data=data)
-                req.add_header("Authorization", self.authorization)
+                req.add_header("Authorization", self.get_authorization(url))
                 req.add_header('Content-Type', 'application/json')
                 content = urllib2.urlopen(req, timeout=300).read()
                 break
             except urllib2.HTTPError, e:
                 if e.code == 401:
-                    self.setAuthorization()
+                    self.authorize(url)
                 elif e.code == 404:
                     self.setAuthorization()
                     self.setupApplication()
